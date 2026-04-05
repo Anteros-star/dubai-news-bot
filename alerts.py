@@ -3,22 +3,20 @@ import requests
 import os
 import time
 
-# بيانات التليغرام
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# كلمات اقتصادية فقط
-keywords = ["flyDubai","emirates airline", "economy", "market", "stock", "IPO", "investment", "real estate", "finance"]
-
-# رابط RSS
+keywords = ["economy", "market", "stock", "IPO", "investment", "real estate", "finance"]
 url = "https://news.google.com/rss/search?q=Dubai&hl=en&gl=US&ceid=US:en"
 
-# تحميل الأخبار المرسلة مسبقاً (أو إنشاء مجموعة جديدة إذا الملف غير موجود)
-if os.path.exists("sent.txt"):
-    with open("sent.txt", "r") as f:
+sent_file = "sent.txt"
+if os.path.exists(sent_file):
+    with open(sent_file, "r") as f:
         sent_links = set(line.strip() for line in f.readlines())
 else:
     sent_links = set()
+
+first_run = True
 
 def send(msg):
     requests.post(
@@ -35,10 +33,11 @@ while True:
 
         if any(k.lower() in title.lower() for k in keywords):
             if link not in sent_links:
-                send(f"🚨 {title}\n{link}")
+                if not first_run:
+                    send(f"🚨 {title}\n{link}")
                 sent_links.add(link)
-                # تخزين الرابط في الملف لمنع التكرار بعد إعادة التشغيل
-                with open("sent.txt", "a") as f:
+                with open(sent_file, "a") as f:
                     f.write(link + "\n")
 
-    time.sleep(600)  # تحقق كل 10 دقائق
+    first_run = False
+    time.sleep(600)
