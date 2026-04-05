@@ -8,7 +8,7 @@ TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # كلمات اقتصادية فقط
-keywords = ["Dubai","economy", "market", "stock", "IPO", "investment", "real estate", "finance"]
+keywords = ["flyDubai","emirates airline", "economy", "market", "stock", "IPO", "investment", "real estate", "finance"]
 
 # رابط RSS
 url = "https://news.google.com/rss/search?q=Dubai&hl=en&gl=US&ceid=US:en"
