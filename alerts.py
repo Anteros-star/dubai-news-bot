@@ -6,7 +6,7 @@ import time
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-keywords = ["economy", "market", "stock", "IPO", "investment", "real estate", "finance"]
+keywords = ["flydubai", "emirates airline", "difc", "dfm", "economy", "market", "stock", "IPO", "investment", "real estate", "finance"]
 url = "https://news.google.com/rss/search?q=Dubai&hl=en&gl=US&ceid=US:en"
 
 sent_file = "sent.txt"
