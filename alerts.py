@@ -167,8 +167,10 @@ def main():
                     msg = format_message(title, link, analysis)
                     if send(msg):
                         new_count += 1
-                    time.sleep(4)  # احترام حد 15 طلب/دقيقة
 
+                sent_news.add(title)
+                time.sleep(6)  # بعد كل خبر مو بس المهم
+                
                 sent_news.add(title)
 
         save_sent(sent_news)
