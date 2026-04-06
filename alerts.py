@@ -27,14 +27,20 @@ if not all([TOKEN, CHAT_ID, OPENAI_API_KEY]):
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================
-# 📰 مصادر الأخبار (أخبار اليوم فقط)
+# 📰 مصادر الأخبار
 # ============================
 def get_feeds():
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     return [
-        f"https://news.google.com/rss/search?q=UAE+Dubai+AbuDhabi+Sharjah+Ajman+RAK+economy+finance+after:{yesterday}&hl=en&gl=AE&ceid=AE:en",
-        f"https://news.google.com/rss/search?q=الإمارات+دبي+أبوظبي+الشارقة+عجمان+رأس+الخيمة+اقتصاد+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
-        f"https://news.google.com/rss/search?q=DFM+ADX+سوق+دبي+أبوظبي+المالي+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
+        # أخبار بيزنس شاملة بالإنجليزي
+        f"https://news.google.com/rss/search?q=UAE+business+after:{yesterday}&hl=en&gl=AE&ceid=AE:en",
+        f"https://news.google.com/rss/search?q=UAE+companies+stocks+banks+after:{yesterday}&hl=en&gl=AE&ceid=AE:en",
+        f"https://news.google.com/rss/search?q=Dubai+AbuDhabi+business+market+after:{yesterday}&hl=en&gl=AE&ceid=AE:en",
+        f"https://news.google.com/rss/search?q=DFM+ADX+UAE+stocks+after:{yesterday}&hl=en&gl=AE&ceid=AE:en",
+        # أخبار بيزنس شاملة بالعربي
+        f"https://news.google.com/rss/search?q=الإمارات+أعمال+شركات+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
+        f"https://news.google.com/rss/search?q=دبي+أبوظبي+بنوك+أسهم+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
+        f"https://news.google.com/rss/search?q=سوق+دبي+أبوظبي+المالي+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
     ]
 
 CHECK_INTERVAL = 600
@@ -83,18 +89,25 @@ def send(msg: str, retries: int = 3):
 # 🤖 تحليل الخبر بـ OpenAI
 # ============================
 def analyze_news(title: str) -> dict | None:
-    prompt = f"""أنت محلل اقتصادي متخصص في اقتصاد الإمارات.
-حلّل الخبر التالي وأجب فقط بـ JSON صالح بهذا الشكل بدون أي نص إضافي:
+    prompt = f"""أنت محرر أخبار اقتصادية متخصص في الإمارات.
+
+مهمتك:
+1. تحقق إذا كان الخبر متعلق بالإمارات (شركات، بنوك، أسواق، قطاعات، مؤسسات، عقارات، طيران، تجارة، استثمار...)
+2. إذا كان متعلقاً بالإمارات → أرسله بغض النظر عن أهميته
+3. إذا لم يكن له علاقة بالإمارات نهائياً → لا ترسله
+
+أجب فقط بـ JSON صالح بهذا الشكل بدون أي نص إضافي:
 
 {{
-  "important": true,
-  "importance": "عالي",
+  "send": true,
+  "category": "أسواق مالية",
   "summary": "ملخص الخبر بجملة واحدة بالعربية",
-  "impact": "التأثير المتوقع على الاقتصاد بجملة واحدة بالعربية"
+  "emoji": "📈"
 }}
 
-قيم "importance" المسموحة فقط: عالي أو متوسط أو منخفض
-"important" يكون true إذا كانت الأهمية عالي أو متوسط، وfalse إذا كانت منخفض
+قيم "category" المتاحة: أسواق مالية، بنوك، عقارات، شركات، طيران، تجارة، استثمار، اقتصاد كلي، أخرى
+قيم "emoji": 📈 للأسواق، 🏦 للبنوك، 🏗️ للعقارات، ✈️ للطيران، 🏢 للشركات، 💰 للاستثمار، 📊 للاقتصاد
+"send" يكون false فقط إذا كان الخبر لا علاقة له بالإمارات نهائياً
 
 الخبر: {title}"""
 
@@ -102,8 +115,8 @@ def analyze_news(title: str) -> dict | None:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=300,
+            temperature=0.1,
+            max_tokens=200,
         )
         raw = response.choices[0].message.content.strip()
         raw = raw.replace("```json", "").replace("```", "").strip()
@@ -117,21 +130,14 @@ def analyze_news(title: str) -> dict | None:
 # ============================
 # 📝 تنسيق الرسالة
 # ============================
-IMPORTANCE_EMOJI = {
-    "عالي":  "🔴",
-    "متوسط": "🟡",
-    "منخفض": "🟢",
-}
-
 def format_message(title: str, link: str, analysis: dict) -> str:
-    emoji = IMPORTANCE_EMOJI.get(analysis.get("importance", ""), "📊")
-    now   = datetime.now().strftime("%H:%M · %d/%m/%Y")
+    emoji    = analysis.get("emoji", "📊")
+    category = analysis.get("category", "أخبار")
+    now      = datetime.now().strftime("%H:%M · %d/%m/%Y")
     return (
-        f"{emoji} <b>خبر اقتصادي - الإمارات</b>\n\n"
+        f"{emoji} <b>{category}</b>\n\n"
         f"📌 <b>{title}</b>\n\n"
-        f"📋 <b>الملخص:</b> {analysis.get('summary', '')}\n"
-        f"📈 <b>التأثير:</b> {analysis.get('impact', '')}\n"
-        f"⚡ <b>الأهمية:</b> {analysis.get('importance', '')}\n\n"
+        f"📋 {analysis.get('summary', '')}\n\n"
         f"🔗 <a href='{link}'>اقرأ الخبر كاملاً</a>\n"
         f"🕐 {now}"
     )
@@ -156,19 +162,18 @@ def main():
                 log.error(f"خطأ في قراءة RSS: {e}")
                 continue
 
-            for entry in feed.entries[:15]:
+            for entry in feed.entries[:30]:
                 title = entry.get("title", "").strip()
                 link  = entry.get("link", "")
 
                 if not title or title in sent_news:
                     continue
 
-                # تجاهل الأخبار الأقدم من 24 ساعة
+                # تجاهل الأخبار الأقدم من 48 ساعة
                 published = entry.get("published_parsed")
                 if published:
                     age_hours = (time.time() - mktime(published)) / 3600
-                    if age_hours > 24:
-                        log.info(f"⏭️ خبر قديم ({age_hours:.0f} ساعة): {title[:50]}")
+                    if age_hours > 48:
                         sent_news.add(title)
                         continue
 
@@ -178,7 +183,7 @@ def main():
                 if not analysis:
                     continue
 
-                if analysis.get("important"):
+                if analysis.get("send"):
                     msg = format_message(title, link, analysis)
                     if send(msg):
                         new_count += 1
@@ -186,7 +191,7 @@ def main():
                 time.sleep(1)
 
         save_sent(sent_news)
-        log.info(f"✅ انتهى الفحص — {new_count} خبر مهم أُرسل")
+        log.info(f"✅ انتهى الفحص — {new_count} خبر أُرسل")
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
