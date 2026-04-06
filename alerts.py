@@ -153,23 +153,21 @@ def main():
                 log.error(f"خطأ في قراءة RSS: {e}")
                 continue
 
-           from time import mktime
+            for entry in feed.entries[:15]:
+                title = entry.get("title", "").strip()
+                link  = entry.get("link", "")
 
-for entry in feed.entries[:15]:
-    title = entry.get("title", "").strip()
-    link  = entry.get("link", "")
+                if not title or title in sent_news:
+                    continue
 
-    if not title or title in sent_news:
-        continue
-
-    # تجاهل الأخبار الأقدم من 24 ساعة
-    published = entry.get("published_parsed")
-    if published:
-        age_hours = (time.time() - mktime(published)) / 3600
-        if age_hours > 24:
-            log.info(f"⏭️ خبر قديم ({age_hours:.0f} ساعة): {title[:50]}")
-            sent_news.add(title)
-            continue
+                # تجاهل الأخبار الأقدم من 24 ساعة
+                published = entry.get("published_parsed")
+                if published:
+                    age_hours = (time.time() - mktime(published)) / 3600
+                    if age_hours > 24:
+                        log.info(f"⏭️ خبر قديم ({age_hours:.0f} ساعة): {title[:50]}")
+                        sent_news.add(title)
+                        continue
 
                 analysis = analyze_news(title)
                 sent_news.add(title)
