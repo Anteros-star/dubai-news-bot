@@ -94,20 +94,34 @@ def analyze_news(title: str) -> dict | None:
 
 الخبر: {title}"""
 
-    try:
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300}
-        }
-        r = requests.post(GEMINI_URL, json=payload, timeout=15)
-        r.raise_for_status()
-        raw = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        log.error(f"Gemini أرجع JSON غلط: {e}")
-    except Exception as e:
-        log.error(f"خطأ في Gemini API: {e}")
+    for attempt in range(3):
+        try:
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300}
+            }
+            r = requests.post(GEMINI_URL, json=payload, timeout=15)
+
+            # لو 429 انتظر وحاول مجدداً
+            if r.status_code == 429:
+                wait = 15 * (attempt + 1)
+                log.warning(f"⏳ Gemini 429 — انتظار {wait} ثانية (محاولة {attempt+1}/3)")
+                time.sleep(wait)
+                continue
+
+            r.raise_for_status()
+            raw = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            return json.loads(raw)
+
+        except json.JSONDecodeError as e:
+            log.error(f"Gemini أرجع JSON غلط: {e}")
+            return None
+        except Exception as e:
+            log.error(f"خطأ في Gemini API: {e}")
+            return None
+
+    log.error("❌ فشل الاتصال بـ Gemini بعد 3 محاولات")
     return None
 
 # ============================
@@ -159,8 +173,9 @@ def main():
                     continue
 
                 analysis = analyze_news(title)
+                sent_news.add(title)
+
                 if not analysis:
-                    sent_news.add(title)
                     continue
 
                 if analysis.get("important"):
@@ -168,10 +183,7 @@ def main():
                     if send(msg):
                         new_count += 1
 
-                sent_news.add(title)
-                time.sleep(6)  # بعد كل خبر مو بس المهم
-                
-                sent_news.add(title)
+                time.sleep(8)  # انتظار بعد كل تحليل
 
         save_sent(sent_news)
         log.info(f"✅ انتهى الفحص — {new_count} خبر مهم أُرسل")
