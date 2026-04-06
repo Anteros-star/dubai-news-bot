@@ -22,7 +22,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not all([TOKEN, CHAT_ID, GEMINI_API_KEY]):
     raise EnvironmentError("❌ تأكد من ضبط TOKEN و CHAT_ID و GEMINI_API_KEY في Railway")
 
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
 
 # ============================
 # 📰 مصادر الأخبار
