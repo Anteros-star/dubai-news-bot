@@ -1,11 +1,11 @@
 from time import mktime
+from datetime import datetime, timedelta
 import feedparser
 import requests
 import os
 import time
 import json
 import logging
-from datetime import datetime
 from openai import OpenAI
 
 # ============================
@@ -27,13 +27,15 @@ if not all([TOKEN, CHAT_ID, OPENAI_API_KEY]):
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================
-# 📰 مصادر الأخبار
+# 📰 مصادر الأخبار (أخبار اليوم فقط)
 # ============================
-RSS_FEEDS = [
-    "https://news.google.com/rss/search?q=UAE+Dubai+AbuDhabi+Sharjah+Ajman+RAK+economy+finance&hl=en&gl=AE&ceid=AE:en",
-    "https://news.google.com/rss/search?q=الإمارات+دبي+أبوظبي+الشارقة+عجمان+رأس+الخيمة+اقتصاد&hl=ar&gl=AE&ceid=AE:ar",
-    "https://news.google.com/rss/search?q=DFM+ADX+سوق+دبي+أبوظبي+المالي&hl=ar&gl=AE&ceid=AE:ar",
-]
+def get_feeds():
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return [
+        f"https://news.google.com/rss/search?q=UAE+Dubai+AbuDhabi+Sharjah+Ajman+RAK+economy+finance+after:{yesterday}&hl=en&gl=AE&ceid=AE:en",
+        f"https://news.google.com/rss/search?q=الإمارات+دبي+أبوظبي+الشارقة+عجمان+رأس+الخيمة+اقتصاد+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
+        f"https://news.google.com/rss/search?q=DFM+ADX+سوق+دبي+أبوظبي+المالي+after:{yesterday}&hl=ar&gl=AE&ceid=AE:ar",
+    ]
 
 CHECK_INTERVAL = 600
 SENT_FILE      = "sent_news.json"
@@ -81,7 +83,7 @@ def send(msg: str, retries: int = 3):
 # 🤖 تحليل الخبر بـ OpenAI
 # ============================
 def analyze_news(title: str) -> dict | None:
-    prompt = f"""أنت محلل اقتصادي متخصص في اقتصاد دبي والإمارات.
+    prompt = f"""أنت محلل اقتصادي متخصص في اقتصاد الإمارات.
 حلّل الخبر التالي وأجب فقط بـ JSON صالح بهذا الشكل بدون أي نص إضافي:
 
 {{
@@ -125,7 +127,7 @@ def format_message(title: str, link: str, analysis: dict) -> str:
     emoji = IMPORTANCE_EMOJI.get(analysis.get("importance", ""), "📊")
     now   = datetime.now().strftime("%H:%M · %d/%m/%Y")
     return (
-        f"{emoji} <b>خبر اقتصادي - دبي</b>\n\n"
+        f"{emoji} <b>خبر اقتصادي - الإمارات</b>\n\n"
         f"📌 <b>{title}</b>\n\n"
         f"📋 <b>الملخص:</b> {analysis.get('summary', '')}\n"
         f"📈 <b>التأثير:</b> {analysis.get('impact', '')}\n"
@@ -140,11 +142,12 @@ def format_message(title: str, link: str, analysis: dict) -> str:
 def main():
     sent_news = load_sent()
     log.info(f"🚀 البوت بدأ — {len(sent_news)} خبر محفوظ مسبقاً")
-    send("🤖 <b>بوت أخبار دبي الاقتصادية</b> بدأ العمل ✅\n⚡ يعمل بـ GPT-4o-mini")
+    send("🤖 <b>بوت أخبار الإمارات الاقتصادية</b> بدأ العمل ✅\n⚡ يعمل بـ GPT-4o-mini")
 
     while True:
         log.info("🔍 جاري فحص الأخبار...")
         new_count = 0
+        RSS_FEEDS = get_feeds()
 
         for feed_url in RSS_FEEDS:
             try:
