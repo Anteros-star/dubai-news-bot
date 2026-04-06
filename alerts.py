@@ -5,6 +5,7 @@ import time
 import json
 import logging
 from datetime import datetime
+from openai import OpenAI
 
 # ============================
 # 🔧 الإعدادات
@@ -17,12 +18,12 @@ log = logging.getLogger(__name__)
 
 TOKEN          = os.getenv("TOKEN")
 CHAT_ID        = os.getenv("CHAT_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not all([TOKEN, CHAT_ID, GEMINI_API_KEY]):
-    raise EnvironmentError("❌ تأكد من ضبط TOKEN و CHAT_ID و GEMINI_API_KEY في Railway")
+if not all([TOKEN, CHAT_ID, OPENAI_API_KEY]):
+    raise EnvironmentError("❌ تأكد من ضبط TOKEN و CHAT_ID و OPENAI_API_KEY في Railway")
 
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================
 # 📰 مصادر الأخبار
@@ -76,7 +77,7 @@ def send(msg: str, retries: int = 3):
     return False
 
 # ============================
-# 🤖 تحليل الخبر بـ Gemini
+# 🤖 تحليل الخبر بـ OpenAI
 # ============================
 def analyze_news(title: str) -> dict | None:
     prompt = f"""أنت محلل اقتصادي متخصص في اقتصاد دبي والإمارات.
@@ -94,34 +95,20 @@ def analyze_news(title: str) -> dict | None:
 
 الخبر: {title}"""
 
-    for attempt in range(3):
-        try:
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300}
-            }
-            r = requests.post(GEMINI_URL, json=payload, timeout=15)
-
-            # لو 429 انتظر وحاول مجدداً
-            if r.status_code == 429:
-                wait = 15 * (attempt + 1)
-                log.warning(f"⏳ Gemini 429 — انتظار {wait} ثانية (محاولة {attempt+1}/3)")
-                time.sleep(wait)
-                continue
-
-            r.raise_for_status()
-            raw = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            return json.loads(raw)
-
-        except json.JSONDecodeError as e:
-            log.error(f"Gemini أرجع JSON غلط: {e}")
-            return None
-        except Exception as e:
-            log.error(f"خطأ في Gemini API: {e}")
-            return None
-
-    log.error("❌ فشل الاتصال بـ Gemini بعد 3 محاولات")
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=300,
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.error(f"GPT أرجع JSON غلط: {e}")
+    except Exception as e:
+        log.error(f"خطأ في OpenAI API: {e}")
     return None
 
 # ============================
@@ -152,7 +139,7 @@ def format_message(title: str, link: str, analysis: dict) -> str:
 def main():
     sent_news = load_sent()
     log.info(f"🚀 البوت بدأ — {len(sent_news)} خبر محفوظ مسبقاً")
-    send("🤖 <b>بوت أخبار دبي الاقتصادية</b> بدأ العمل ✅\n⚡ يعمل بـ Gemini AI مجاناً")
+    send("🤖 <b>بوت أخبار دبي الاقتصادية</b> بدأ العمل ✅\n⚡ يعمل بـ GPT-4o-mini")
 
     while True:
         log.info("🔍 جاري فحص الأخبار...")
@@ -183,7 +170,7 @@ def main():
                     if send(msg):
                         new_count += 1
 
-                time.sleep(8)  # انتظار بعد كل تحليل
+                time.sleep(1)
 
         save_sent(sent_news)
         log.info(f"✅ انتهى الفحص — {new_count} خبر مهم أُرسل")
