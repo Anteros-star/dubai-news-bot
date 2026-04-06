@@ -30,9 +30,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # 📰 مصادر الأخبار
 # ============================
 RSS_FEEDS = [
-    "https://news.google.com/rss/search?q=Dubai+economy&hl=en&gl=AE&ceid=AE:en",
-    "https://news.google.com/rss/search?q=دبي+اقتصاد&hl=ar&gl=AE&ceid=AE:ar",
-    "https://news.google.com/rss/search?q=Dubai+real+estate+finance&hl=en&gl=AE&ceid=AE:en",
+    "https://news.google.com/rss/search?q=UAE+Dubai+AbuDhabi+Sharjah+Ajman+RAK+economy+finance&hl=en&gl=AE&ceid=AE:en",
+    "https://news.google.com/rss/search?q=الإمارات+دبي+أبوظبي+الشارقة+عجمان+رأس+الخيمة+اقتصاد&hl=ar&gl=AE&ceid=AE:ar",
+    "https://news.google.com/rss/search?q=DFM+ADX+سوق+دبي+أبوظبي+المالي&hl=ar&gl=AE&ceid=AE:ar",
 ]
 
 CHECK_INTERVAL = 600
