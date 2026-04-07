@@ -6,6 +6,7 @@ import os
 import time
 import json
 import logging
+import re
 from openai import OpenAI
 import redis
 
@@ -29,8 +30,18 @@ if not all([TOKEN, CHAT_ID, OPENAI_API_KEY, REDIS_URL]):
 client = OpenAI(api_key=OPENAI_API_KEY)
 r      = redis.from_url(REDIS_URL, decode_responses=True)
 
-REDIS_KEY      = "dubai_news_bot:sent_links"
+REDIS_KEY      = "dubai_news_bot:sent_titles"
 CHECK_INTERVAL = 600
+
+# ============================
+# 🧹 Normalize Title (لمنع التكرار)
+# ============================
+def normalize(title: str) -> str:
+    title = title.lower().strip()
+    title = re.sub(r'[^\w\s]', '', title)       # حذف علامات الترقيم
+    title = re.sub(r'\s+', ' ', title)           # توحيد المسافات
+    words = title.split()
+    return ' '.join(sorted(words[:8]))           # أول 8 كلمات مرتبة
 
 # ============================
 # 📰 News Feeds
@@ -48,17 +59,17 @@ def get_feeds():
     ]
 
 # ============================
-# 💾 Redis - Check & Save Links
+# 💾 Redis
 # ============================
-def is_sent(link: str) -> bool:
-    return r.sismember(REDIS_KEY, link)
+def is_sent(key: str) -> bool:
+    return r.sismember(REDIS_KEY, key)
 
-def mark_sent(link: str):
-    r.sadd(REDIS_KEY, link)
-    r.expire(REDIS_KEY, 60 * 60 * 24 * 7)  # Keep for 7 days
+def mark_sent(key: str):
+    r.sadd(REDIS_KEY, key)
+    r.expire(REDIS_KEY, 60 * 60 * 24 * 7)  # 7 days
 
 # ============================
-# 📲 Send Telegram Message
+# 📲 Send Telegram
 # ============================
 def send(msg: str, retries: int = 3):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -87,21 +98,21 @@ def analyze_news(title: str) -> dict | None:
 
 Your job:
 1. Check if the news is related to UAE (companies, banks, markets, real estate, aviation, trade, investment...)
-2. If related to UAE → send it regardless of importance
+2. If related to UAE → send it
 3. If NOT related to UAE at all → don't send it
 
 Reply ONLY with valid JSON, no extra text:
 
 {{
   "send": true,
-  "category": "Financial Markets",
+  "category": "أسواق مالية",
   "summary": "One sentence summary in Arabic",
   "emoji": "📈"
 }}
 
 Category options: أسواق مالية، بنوك، عقارات، شركات، طيران، تجارة، استثمار، اقتصاد كلي، أخرى
-Emoji options: 📈 markets, 🏦 banks, 🏗️ real estate, ✈️ aviation, 🏢 companies, 💰 investment, 📊 economy
-"send" is false ONLY if the news has absolutely no relation to UAE
+Emoji: 📈 markets, 🏦 banks, 🏗️ real estate, ✈️ aviation, 🏢 companies, 💰 investment, 📊 economy
+"send" is false ONLY if news has absolutely no relation to UAE
 
 News: {title}"""
 
@@ -141,13 +152,13 @@ def format_message(title: str, link: str, analysis: dict) -> str:
 # ============================
 def main():
     log.info("🚀 Bot started with Redis")
-    send("🤖 <b>UAE Business News Bot</b> started ✅\n⚡ Powered by GPT-4o-mini + Redis")
+    send("🤖 <b>UAE Business News Bot</b> started ✅\n⚡ GPT-4o-mini + Redis")
 
     while True:
         log.info("🔍 Checking news...")
-        new_count  = 0
-        seen_links = set()
-        RSS_FEEDS  = get_feeds()
+        new_count    = 0
+        seen_titles  = set()
+        RSS_FEEDS    = get_feeds()
 
         for feed_url in RSS_FEEDS:
             try:
@@ -163,22 +174,24 @@ def main():
                 if not title or not link:
                     continue
 
-                # Skip duplicates
-                if link in seen_links or is_sent(link):
+                # فلتر التكرار بالعنوان المنظّف
+                norm = normalize(title)
+                if norm in seen_titles or is_sent(norm):
+                    log.info(f"⏭️ Duplicate: {title[:50]}")
                     continue
 
-                seen_links.add(link)
+                seen_titles.add(norm)
 
-                # Skip news older than 24 hours
+                # تجاهل الأخبار الأقدم من 24 ساعة
                 published = entry.get("published_parsed")
                 if published:
                     age_hours = (time.time() - mktime(published)) / 3600
                     if age_hours > 24:
-                        mark_sent(link)
+                        mark_sent(norm)
                         continue
 
                 analysis = analyze_news(title)
-                mark_sent(link)
+                mark_sent(norm)
 
                 if not analysis:
                     continue
