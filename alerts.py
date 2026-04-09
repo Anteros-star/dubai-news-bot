@@ -31,6 +31,8 @@ TOP_COUNT = 5
 # ============================
 LOW_QUALITY = ["podcast","video","opinion","newsletter"]
 
+UAE_HINTS = ["uae","dubai","abu dhabi","emirates","adnoc","emaar","etihad"]
+
 # ============================
 # NORMALIZE
 # ============================
@@ -48,22 +50,17 @@ def get_sources():
     return [
         "https://feeds.reuters.com/reuters/businessNews",
         "https://feeds.reuters.com/news/wealth",
-        "https://feeds.apnews.com/rss/business",
         "https://feeds.bloomberg.com/markets/news.rss",
         "https://www.cnbc.com/id/100003114/device/rss/rss.html",
         "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
         "https://www.marketwatch.com/rss/topstories",
         "https://feeds.bbci.co.uk/news/business/rss.xml",
         "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
-        "https://feeds.washingtonpost.com/rss/business",
-        "https://www.theguardian.com/business/rss",
-        "https://www.economist.com/finance-and-economics/rss.xml",
         "https://www.aljazeera.com/xml/rss/all.xml",
         "https://gulfnews.com/rss/business",
         "https://www.khaleejtimes.com/rss/business",
         "https://www.thenationalnews.com/arc/outboundfeeds/rss/",
-        f"https://news.google.com/rss/search?q=UAE+OR+Dubai+OR+Abu+Dhabi+economy+after:{y}&hl=en&gl=AE&ceid=AE:en",
-        f"https://news.google.com/rss/search?q=Middle+East+business+after:{y}&hl=en",
+        f"https://news.google.com/rss/search?q=UAE+Dubai+AbuDhabi+economy+after:{y}&hl=en&gl=AE&ceid=AE:en"
     ]
 
 # ============================
@@ -78,15 +75,23 @@ def send(msg):
     })
 
 # ============================
-# AI
+# 🧠 AI (STRICT UAE)
 # ============================
 def analyze(title):
     prompt = f"""
-You are a professional financial news editor.
+You are a UAE business news editor.
 
-1. Is this relevant to UAE, Gulf, or Middle East?
-2. If YES → classify + importance (1-10)
-3. If NO → send=false
+STRICT RULES:
+
+Only accept news if:
+1. Directly about UAE (companies, economy, real estate, aviation, banks)
+OR
+2. Has CLEAR and STRONG impact on UAE economy
+
+Reject:
+- General world news
+- US/Europe news without UAE link
+- Vague Middle East news
 
 Return JSON:
 {{
@@ -96,8 +101,7 @@ Return JSON:
 "summary": "ملخص عربي قصير"
 }}
 
-Categories:
-أسواق - بنوك - عقارات - شركات - طاقة - تقنية - اقتصاد
+If not relevant → {{ "send": false }}
 
 News: {title}
 """
@@ -137,7 +141,10 @@ def collect_news():
             if any(x in title.lower() for x in LOW_QUALITY):
                 continue
 
-            # limit per source
+            # فلتر خفيف (يساعد بدون ما يخنق الأخبار)
+            if not any(k in title.lower() for k in UAE_HINTS):
+                continue
+
             if source_count.get(url, 0) >= 5:
                 continue
 
@@ -151,7 +158,7 @@ def collect_news():
 
             importance = analysis.get("importance",0)
 
-            if importance < 5:
+            if importance < 6:
                 continue
 
             item = {
@@ -164,11 +171,11 @@ def collect_news():
 
             news.append(item)
 
-            # 🚨 BREAKING NEWS
+            # 🚨 BREAKING
             if importance >= 8:
                 if not r.sismember("breaking_sent", norm):
                     msg = (
-                        "🚨 <b>خبر عاجل</b>\n\n"
+                        "🚨 <b>خبر عاجل - الإمارات</b>\n\n"
                         f"📌 <b>{title}</b>\n"
                         f"📊 {item['summary']}\n"
                         f"🔗 {link}"
@@ -181,7 +188,7 @@ def collect_news():
     return news
 
 # ============================
-# SEND TOP
+# TOP NEWS
 # ============================
 def send_top(news):
     if not news:
@@ -189,7 +196,7 @@ def send_top(news):
 
     news = sorted(news, key=lambda x: x["importance"], reverse=True)[:TOP_COUNT]
 
-    msg = "🔥 <b>أهم الأخبار الاقتصادية</b>\n\n"
+    msg = "🇦🇪 <b>أهم أخبار الإمارات الاقتصادية</b>\n\n"
 
     for i, n in enumerate(news, 1):
         msg += (
@@ -208,9 +215,9 @@ def send_top(news):
 # ============================
 def main():
     while True:
-        log.info("collecting news...")
+        log.info("collecting UAE news...")
         news = collect_news()
-        log.info(f"{len(news)} valid news")
+        log.info(f"{len(news)} UAE news")
 
         send_top(news)
 
