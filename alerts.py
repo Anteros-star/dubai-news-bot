@@ -24,14 +24,13 @@ REDIS_URL = os.getenv("REDIS_URL")
 client = OpenAI(api_key=OPENAI_API_KEY)
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
-CHECK_INTERVAL = 1800  # كل 30 دقيقة
-TOP_COUNT = 3
+CHECK_INTERVAL = 1800
+TOP_COUNT = 5
 
 # ============================
-# FILTERS
+# FILTER (خفيف فقط)
 # ============================
-UAE_KEYWORDS = ["uae","dubai","abu dhabi","emirates","adnoc","dfm","adx","emaar"]
-LOW_QUALITY = ["live","update","podcast","video","opinion"]
+LOW_QUALITY = ["podcast","video","opinion","newsletter"]
 
 # ============================
 # NORMALIZE
@@ -42,12 +41,27 @@ def normalize(t):
     return ' '.join(sorted(t.split()[:10]))
 
 # ============================
-# SOURCES
+# 🔥 SOURCES (قوية)
 # ============================
 def get_sources():
     y = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
     return [
-        f"https://news.google.com/rss/search?q=UAE+business+after:{y}&hl=en&gl=AE&ceid=AE:en"
+        # Reuters
+        "https://feeds.reuters.com/reuters/businessNews",
+        "https://feeds.reuters.com/news/wealth",
+
+        # Bloomberg
+        "https://feeds.bloomberg.com/markets/news.rss",
+
+        # CNBC
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+
+        # WSJ
+        "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+
+        # Google (دعم فقط)
+        f"https://news.google.com/rss/search?q=Middle+East+economy+after:{y}&hl=en"
     ]
 
 # ============================
@@ -57,17 +71,27 @@ def send(msg):
     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={
         "chat_id": CHAT_ID,
         "text": msg,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true"
     })
 
 # ============================
-# AI
+# 🧠 AI ANALYSIS (الأهم)
 # ============================
 def analyze(title):
     prompt = f"""
-Rate importance of UAE business news (1-10) and summarize in Arabic.
+You are a professional financial news editor.
+
+1. Is this relevant to UAE, Gulf, or Middle East economy?
+2. If YES → importance 1-10
+3. If NO → send=false
+
 Return JSON:
-{{"importance": 1-10, "summary":"..."}}
+{{
+"send": true,
+"importance": 7,
+"summary": "ملخص عربي بجملة واحدة"
+}}
 
 News: {title}
 """
@@ -82,11 +106,11 @@ News: {title}
         return None
 
 # ============================
-# MAIN LOGIC
+# COLLECT
 # ============================
 def collect_news():
     seen = set()
-    news_list = []
+    news = []
 
     for url in get_sources():
         feed = feedparser.parse(url)
@@ -103,16 +127,14 @@ def collect_news():
             if norm in seen:
                 continue
 
-            if not any(k in title.lower() for k in UAE_KEYWORDS):
-                continue
-
             if any(x in title.lower() for x in LOW_QUALITY):
                 continue
 
             seen.add(norm)
 
             analysis = analyze(title)
-            if not analysis:
+
+            if not analysis or not analysis.get("send"):
                 continue
 
             importance = analysis.get("importance",0)
@@ -120,7 +142,7 @@ def collect_news():
             if importance < 5:
                 continue
 
-            news_list.append({
+            news.append({
                 "title": title,
                 "link": link,
                 "importance": importance,
@@ -129,18 +151,18 @@ def collect_news():
 
             time.sleep(0.3)
 
-    return news_list
+    return news
 
 # ============================
-# SEND TOP NEWS
+# SEND TOP
 # ============================
-def send_top_news(news):
+def send_top(news):
     if not news:
         return
 
     news = sorted(news, key=lambda x: x["importance"], reverse=True)[:TOP_COUNT]
 
-    msg = "🔥 <b>أهم الأخبار الاقتصادية في الإمارات</b>\n\n"
+    msg = "🔥 <b>أهم الأخبار الاقتصادية (الخليج/الإمارات)</b>\n\n"
 
     for i, n in enumerate(news, 1):
         msg += (
@@ -158,11 +180,11 @@ def send_top_news(news):
 # ============================
 def main():
     while True:
-        log.info("collecting...")
+        log.info("collecting news...")
         news = collect_news()
         log.info(f"{len(news)} valid news")
 
-        send_top_news(news)
+        send_top(news)
 
         time.sleep(CHECK_INTERVAL)
 
