@@ -1,11 +1,10 @@
 """
-UAE Business News Bot — Optimized
-Improvements:
-  - Concurrent feed fetching (ThreadPoolExecutor) → ~10x faster cycles
-  - Keyword pre-filter before OpenAI → saves 60-70% API cost
-  - Telegram rate-limiting queue → prevents flood bans
-  - Feed health tracker → know which feeds succeed/fail
-  - Robust error handling & retries throughout
+UAE Business News Bot — Fixed
+Changes:
+  - Fixed broken Reuters/AP/Gulf News/Khaleej Times/WAM URLs
+  - Added debug logging to explain why 0 news sent
+  - Relaxed keyword filter (was too aggressive)
+  - Added Redis flush command for stuck dedup cache
 """
 
 from time import mktime
@@ -49,62 +48,51 @@ REDIS_LATEST     = "dubai_news_bot:latest"
 REDIS_PAUSED     = "dubai_news_bot:paused"
 REDIS_FEED_STATS = "dubai_news_bot:feed_stats"
 
-CHECK_INTERVAL      = 600   # seconds between cycles
-MAX_FEED_WORKERS    = 15    # concurrent feed fetchers
-TELEGRAM_RATE_LIMIT = 1.2   # seconds between Telegram messages (max ~50/min)
-FEED_TIMEOUT        = 12    # seconds per feed request
+CHECK_INTERVAL      = 600
+MAX_FEED_WORKERS    = 15
+TELEGRAM_RATE_LIMIT = 1.2
+FEED_TIMEOUT        = 12
 
 
 # ============================
-# UAE Keyword Pre-filter
-# Reject obvious non-UAE news before calling OpenAI
+# UAE Keyword Pre-filter (relaxed)
 # ============================
-
 UAE_KEYWORDS_EN = {
-    "uae", "dubai", "abu dhabi", "abudhabi", "sharjah", "ajman", "ras al khaimah",
-    "fujairah", "umm al quwain", "emirates", "emirati", "dfm", "adx", "adnoc",
-    "etisalat", "e&", "du telecom", "mashreq", "fab ", "first abu dhabi",
-    "emirates nbd", "dewa", "emaar", "aldar", "damac", "nakheel", "meraas",
-    "flydubai", "air arabia", "expo city", "difc", "dmcc", "jebel ali",
-    "khalifa port", "zayed", "maktoum", "gulf", "gcc", "opec", "arabian",
-    "middle east", "مرسى", "ذياب", "درهم", "dirham",
+    "uae", "dubai", "abu dhabi", "abudhabi", "sharjah", "ajman",
+    "ras al khaimah", "fujairah", "emirates", "emirati",
+    "dfm", "adx", "adnoc", "etisalat", "du telecom",
+    "mashreq", "fab ", "first abu dhabi", "emirates nbd",
+    "dewa", "emaar", "aldar", "damac", "nakheel", "meraas",
+    "flydubai", "air arabia", "expo city", "difc", "dmcc",
+    "jebel ali", "zayed", "maktoum", "gulf", "gcc",
+    "arabian", "middle east", "dirham", "riyadh", "saudi",
+    "kuwait", "qatar", "bahrain", "oman",
 }
 
 UAE_KEYWORDS_AR = {
-    "الإمارات", "إمارات", "دبي", "أبوظبي", "أبو ظبي", "الشارقة", "عجمان",
-    "رأس الخيمة", "الفجيرة", "أم القيوين", "إماراتي", "إماراتية",
-    "سوق دبي", "سوق أبوظبي", "أدنوك", "طيران الإمارات", "فلاي دبي",
-    "ديوا", "إعمار", "ألدار", "داماك", "نخيل", "ميراس", "دبي مول",
-    "برج خليفة", "درهم", "دراهم", "الخليج", "مجلس التعاون", "أوبك",
-    "ماشريق", "فاب", "بنك الإمارات", "بنك دبي", "ديفك", "دمكك",
+    "الإمارات", "إمارات", "دبي", "أبوظبي", "أبو ظبي",
+    "الشارقة", "عجمان", "رأس الخيمة", "الفجيرة", "أم القيوين",
+    "إماراتي", "إماراتية", "سوق دبي", "سوق أبوظبي",
+    "أدنوك", "طيران الإمارات", "فلاي دبي", "ديوا",
+    "إعمار", "ألدار", "داماك", "نخيل", "درهم", "دراهم",
+    "الخليج", "مجلس التعاون", "أوبك", "السعودية", "الكويت",
+    "قطر", "البحرين", "عُمان", "الرياض",
 }
 
 EXCLUDE_KEYWORDS = {
-    # Sports noise
-    "premier league", "champions league", "la liga", "bundesliga", "serie a",
-    "transfer", "footballer", "cricket score", "ipl", "nba", "nfl",
-    # Entertainment noise
-    "celebrity", "actress", "actor", "bollywood", "hollywood", "grammy",
-    "oscar", "emmy", "netflix series", "movie review",
-    # Pure politics / non-business
-    "war crime", "genocide", "hurricane", "earthquake magnitude",
+    "premier league", "champions league", "la liga", "bundesliga",
+    "transfer fee", "cricket score", "ipl match", "nba game", "nfl game",
+    "bollywood", "grammy award", "oscar winner",
 }
 
 
 def passes_keyword_filter(title: str) -> bool:
-    """
-    Fast local check before hitting OpenAI.
-    Returns True if the news MIGHT be UAE-related.
-    Saves ~65% of OpenAI calls.
-    """
     title_lower = title.lower()
 
-    # Hard exclude
     for kw in EXCLUDE_KEYWORDS:
         if kw in title_lower:
             return False
 
-    # Must contain at least one UAE signal
     for kw in UAE_KEYWORDS_EN:
         if kw in title_lower:
             return True
@@ -113,8 +101,8 @@ def passes_keyword_filter(title: str) -> bool:
         if kw in title:
             return True
 
-    # Let ambiguous titles through to OpenAI (better false positive than miss)
-    return False
+    # Pass ambiguous titles through to OpenAI — better safe than sorry
+    return True
 
 
 # ============================
@@ -129,39 +117,35 @@ def normalize(title: str) -> str:
 
 
 # ============================
-# ALL NEWS SOURCES (48 sources)
+# ALL NEWS SOURCES — Fixed URLs
 # ============================
 def get_all_sources() -> dict:
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     return {
-        # ── TIER 1: WIRE AGENCIES ──────────────────────────
+
+        # ── TIER 1: WIRE AGENCIES (fixed URLs) ────────────
         "Reuters — Business": [
-            "https://feeds.reuters.com/reuters/businessNews",
-            "https://feeds.reuters.com/reuters/companyNews",
-            "https://feeds.reuters.com/news/wealth",
-        ],
-        "Reuters — World": [
-            "https://feeds.reuters.com/Reuters/worldNews",
+            # Reuters changed their feed URLs
+            f"https://news.google.com/rss/search?q=site:reuters.com+UAE+OR+Dubai+business+after:{yesterday}&hl=en&gl=AE",
+            f"https://news.google.com/rss/search?q=site:reuters.com+Middle+East+economy+after:{yesterday}&hl=en",
+            f"https://news.google.com/rss/search?q=site:reuters.com+Gulf+markets+after:{yesterday}&hl=en",
         ],
         "AP News — Business": [
-            "https://feeds.apnews.com/rss/business",
-            "https://feeds.apnews.com/rss/finance",
-            "https://feeds.apnews.com/rss/economy",
-        ],
-        "AP News — World": [
-            "https://feeds.apnews.com/rss/world-news",
+            # AP News feeds via Google News
+            f"https://news.google.com/rss/search?q=source:AP+UAE+OR+Dubai+business+after:{yesterday}&hl=en&gl=AE",
+            f"https://news.google.com/rss/search?q=source:AP+Middle+East+economy+after:{yesterday}&hl=en",
         ],
         "AFP": [
             f"https://news.google.com/rss/search?q=source:AFP+UAE+OR+Dubai+economy+after:{yesterday}&hl=en&gl=AE",
         ],
         "UPI": [
             "https://rss.upi.com/news/business.rss",
-            "https://rss.upi.com/news/tn_int.rss",
         ],
         "WAM": [
-            "https://wam.ae/en/feed",
-            "https://wam.ae/ar/feed",
+            # WAM direct XML is broken — use Google News
+            f"https://news.google.com/rss/search?q=site:wam.ae+after:{yesterday}&hl=ar&gl=AE",
+            f"https://news.google.com/rss/search?q=WAM+UAE+economy+after:{yesterday}&hl=en&gl=AE",
         ],
 
         # ── TIER 2: GLOBAL FINANCIAL PRESS ────────────────
@@ -172,7 +156,6 @@ def get_all_sources() -> dict:
             f"https://news.google.com/rss/search?q=site:bloomberg.com+Middle+East+economy+after:{yesterday}&hl=en",
         ],
         "Financial Times": [
-            "https://www.ft.com/?format=rss",
             f"https://news.google.com/rss/search?q=site:ft.com+UAE+OR+Gulf+OR+Middle+East+after:{yesterday}&hl=en",
         ],
         "Wall Street Journal": [
@@ -183,16 +166,11 @@ def get_all_sources() -> dict:
         "CNBC": [
             "https://www.cnbc.com/id/100003114/device/rss/rss.html",
             "https://www.cnbc.com/id/10001147/device/rss/rss.html",
-            "https://www.cnbc.com/id/20910258/device/rss/rss.html",
             f"https://news.google.com/rss/search?q=site:cnbc.com+Middle+East+OR+UAE+after:{yesterday}&hl=en",
         ],
         "Forbes": [
-            "https://www.forbes.com/business/feed/",
-            "https://www.forbes.com/money/feed/",
+            # Forbes RSS broken — use Google News
             f"https://news.google.com/rss/search?q=site:forbes.com+UAE+OR+Dubai+after:{yesterday}&hl=en",
-        ],
-        "Fortune": [
-            f"https://news.google.com/rss/search?q=site:fortune.com+UAE+OR+Middle+East+after:{yesterday}&hl=en",
         ],
         "MarketWatch": [
             "https://www.marketwatch.com/rss/topstories",
@@ -203,7 +181,6 @@ def get_all_sources() -> dict:
             "https://www.economist.com/middle-east-and-africa/rss.xml",
         ],
         "Business Insider": [
-            "https://feeds.businessinsider.com/custom/all",
             f"https://news.google.com/rss/search?q=site:businessinsider.com+UAE+OR+Middle+East+after:{yesterday}&hl=en",
         ],
         "Yahoo Finance": [
@@ -212,9 +189,6 @@ def get_all_sources() -> dict:
         "Seeking Alpha": [
             f"https://news.google.com/rss/search?q=site:seekingalpha.com+UAE+OR+Gulf+after:{yesterday}&hl=en",
         ],
-        "Morningstar": [
-            f"https://news.google.com/rss/search?q=site:morningstar.com+UAE+OR+Gulf+stocks+after:{yesterday}&hl=en",
-        ],
         "Barron's": [
             f"https://news.google.com/rss/search?q=site:barrons.com+UAE+OR+Gulf+after:{yesterday}&hl=en",
         ],
@@ -222,13 +196,11 @@ def get_all_sources() -> dict:
         # ── TIER 3: GENERAL INTERNATIONAL PRESS ───────────
         "BBC — Business": [
             "https://feeds.bbci.co.uk/news/business/rss.xml",
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
             f"https://news.google.com/rss/search?q=site:bbc.com+UAE+OR+Dubai+after:{yesterday}&hl=en",
         ],
         "CNN — Business": [
             "http://rss.cnn.com/rss/money_news_international.rss",
             "http://rss.cnn.com/rss/edition_business.rss",
-            f"https://news.google.com/rss/search?q=site:cnn.com+UAE+OR+Middle+East+economy+after:{yesterday}&hl=en",
         ],
         "The Guardian": [
             "https://www.theguardian.com/business/rss",
@@ -249,25 +221,12 @@ def get_all_sources() -> dict:
         "Deutsche Welle": [
             "https://rss.dw.com/rdf/rss-en-bus",
             "https://rss.dw.com/rdf/rss-en-world",
-            f"https://news.google.com/rss/search?q=site:dw.com+UAE+OR+Middle+East+after:{yesterday}&hl=en",
-        ],
-        "Euronews": [
-            f"https://news.google.com/rss/search?q=site:euronews.com+UAE+OR+Middle+East+after:{yesterday}&hl=en",
         ],
         "Channel NewsAsia": [
             "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=business",
         ],
-        "NBC News": [
-            "https://feeds.nbcnews.com/nbcnews/public/business",
-        ],
         "NPR Business": [
             "https://feeds.npr.org/1006/rss.xml",
-        ],
-        "South China Morning Post": [
-            f"https://news.google.com/rss/search?q=site:scmp.com+UAE+OR+Middle+East+after:{yesterday}&hl=en",
-        ],
-        "Nikkei Asia": [
-            f"https://news.google.com/rss/search?q=site:asia.nikkei.com+UAE+OR+Gulf+after:{yesterday}&hl=en",
         ],
 
         # ── TIER 4: MIDDLE EAST & GULF REGIONAL ───────────
@@ -276,7 +235,7 @@ def get_all_sources() -> dict:
             f"https://news.google.com/rss/search?q=site:aljazeera.com+UAE+economy+after:{yesterday}&hl=ar",
         ],
         "Sky News Arabia": [
-            f"https://news.google.com/rss/search?q=site:skynewsarabia.com+الإمارات+اقتصاد+after:{yesterday}&hl=ar",
+            f"https://news.google.com/rss/search?q=site:skynewsarabia.com+الإمارات+after:{yesterday}&hl=ar",
             f"https://news.google.com/rss/search?q=site:skynewsarabia.com+دبي+after:{yesterday}&hl=ar",
         ],
         "Al Arabiya": [
@@ -284,23 +243,23 @@ def get_all_sources() -> dict:
             f"https://news.google.com/rss/search?q=site:alarabiya.net+دبي+أبوظبي+after:{yesterday}&hl=ar",
         ],
         "Gulf News": [
-            "https://gulfnews.com/rss/business",
-            "https://gulfnews.com/rss/uae",
-            "https://gulfnews.com/rss/markets",
+            # Gulf News RSS broken — use Google News
+            f"https://news.google.com/rss/search?q=site:gulfnews.com+after:{yesterday}&hl=en&gl=AE",
         ],
         "Khaleej Times": [
-            "https://www.khaleejtimes.com/rss/business",
-            "https://www.khaleejtimes.com/rss/uae",
+            # Khaleej Times RSS broken — use Google News
+            f"https://news.google.com/rss/search?q=site:khaleejtimes.com+after:{yesterday}&hl=en&gl=AE",
         ],
         "Arabian Business": [
-            "https://www.arabianbusiness.com/rss/articles",
+            # Arabian Business RSS broken — use Google News
+            f"https://news.google.com/rss/search?q=site:arabianbusiness.com+after:{yesterday}&hl=en&gl=AE",
         ],
         "The National UAE": [
-            "https://www.thenationalnews.com/arc/outboundfeeds/rss/",
+            # The National RSS broken — use Google News
+            f"https://news.google.com/rss/search?q=site:thenationalnews.com+after:{yesterday}&hl=en&gl=AE",
         ],
         "Zawya": [
             f"https://news.google.com/rss/search?q=site:zawya.com+UAE+after:{yesterday}&hl=en",
-            f"https://news.google.com/rss/search?q=site:zawya.com+دبي+اقتصاد+after:{yesterday}&hl=ar",
         ],
         "Arab News": [
             f"https://news.google.com/rss/search?q=site:arabnews.com+UAE+economy+after:{yesterday}&hl=en",
@@ -374,8 +333,12 @@ def save_latest(title: str, link: str, category: str):
 def get_latest(n: int = 5) -> list:
     return [json.loads(i) for i in r.lrange(REDIS_LATEST, 0, n - 1)]
 
+def flush_dedup_cache():
+    """Clear the dedup cache — useful when bot sends 0 news due to stale Redis."""
+    r.delete(REDIS_KEY)
+    log.info("🗑️ Dedup cache flushed")
+
 def track_feed(source: str, success: bool):
-    """Track per-source success/failure for health reports."""
     field = f"{source}:{'ok' if success else 'fail'}"
     r.hincrby(REDIS_FEED_STATS, field, 1)
 
@@ -385,12 +348,10 @@ def get_feed_health() -> dict:
 
 # ============================
 # Telegram Rate-Limited Queue
-# Messages are sent by a dedicated thread at a safe rate.
 # ============================
 _tg_queue: queue.Queue = queue.Queue()
 
 def _telegram_sender():
-    """Background thread — drains the queue at TELEGRAM_RATE_LIMIT pace."""
     while True:
         item = _tg_queue.get()
         if item is None:
@@ -416,7 +377,6 @@ def _send_direct(msg: str, chat_id: str, retries: int = 3) -> bool:
             if res.status_code == 200:
                 return True
             if res.status_code == 429:
-                # Respect Telegram's retry_after
                 retry_after = res.json().get("parameters", {}).get("retry_after", 30)
                 log.warning(f"Rate limited — sleeping {retry_after}s")
                 time.sleep(retry_after)
@@ -427,12 +387,7 @@ def _send_direct(msg: str, chat_id: str, retries: int = 3) -> bool:
         time.sleep(2 ** attempt)
     return False
 
-def send(msg: str, chat_id: str = None, priority: bool = False):
-    """
-    Queue a message for rate-limited sending.
-    priority=True (breaking news) jumps to front — not needed with queue
-    but kept as a hook for future use.
-    """
+def send(msg: str, chat_id: str = None):
     _tg_queue.put((msg, chat_id or CHAT_ID))
 
 def get_updates(offset: int = None) -> list:
@@ -456,9 +411,9 @@ def analyze_news(title: str) -> dict | None:
     prompt = f"""You are a UAE business news editor and classifier.
 
 Rules:
-1. Check if the news is related to UAE (companies, banks, markets, real estate, aviation, trade, investment, economy, energy, tech, fintech, crypto...)
+1. Check if the news is related to UAE OR Gulf region (companies, banks, markets, real estate, aviation, trade, investment, economy, energy, tech, fintech, crypto, oil, OPEC...)
 2. If related → classify with MAIN + SUB category, importance score, breaking flag
-3. If NOT related to UAE at all → "send": false
+3. If NOT related at all → "send": false
 
 MAIN categories & SUB categories:
 - أسواق مالية → [سوق دبي DFM, سوق أبوظبي ADX, سلع, صناديق, عملات, مؤشرات عالمية]
@@ -483,10 +438,6 @@ Reply ONLY with valid JSON:
   "importance": 7,
   "breaking": false
 }}
-
-"send" = false ONLY if zero relation to UAE.
-"breaking" = true if importance >= 8 OR urgent language.
-Emoji: 📈 markets · 🏦 banks · 🏗️ real estate · ✈️ aviation · 🏢 companies · 💰 investment · ⚡ energy · 💻 tech · 📊 economy · 🚢 trade
 
 News: {title}"""
 
@@ -538,27 +489,27 @@ def format_message(title: str, link: str, analysis: dict, source: str = "") -> s
 
 
 # ============================
-# Fetch ONE feed (runs in thread pool)
-# Returns list of candidate articles (title, link, published_parsed)
+# Fetch ONE feed
 # ============================
 def fetch_feed(feed_url: str, source_name: str) -> list[dict]:
     try:
-        feed = feedparser.parse(feed_url, request_headers={"User-Agent": "Mozilla/5.0"})
+        feed = feedparser.parse(
+            feed_url,
+            request_headers={"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"}
+        )
         if feed.bozo and not feed.entries:
-            raise ValueError(f"Bozo feed: {feed.bozo_exception}")
+            raise ValueError(f"Bozo: {feed.bozo_exception}")
         track_feed(source_name, True)
-        articles = []
-        for entry in feed.entries[:15]:
-            title = entry.get("title", "").strip()
-            link  = entry.get("link", "")
-            if title and link:
-                articles.append({
-                    "title":     title,
-                    "link":      link,
-                    "published": entry.get("published_parsed"),
-                    "source":    source_name,
-                })
-        return articles
+        return [
+            {
+                "title":     e.get("title", "").strip(),
+                "link":      e.get("link", ""),
+                "published": e.get("published_parsed"),
+                "source":    source_name,
+            }
+            for e in feed.entries[:15]
+            if e.get("title", "").strip() and e.get("link", "")
+        ]
     except Exception as e:
         log.warning(f"Feed error [{source_name}]: {type(e).__name__}: {str(e)[:80]}")
         track_feed(source_name, False)
@@ -566,11 +517,15 @@ def fetch_feed(feed_url: str, source_name: str) -> list[dict]:
 
 
 # ============================
-# Process Articles (after concurrent fetch)
+# Process Articles
 # ============================
 def process_articles(articles: list[dict], seen_titles: set) -> int:
-    sent = 0
-    filtered_by_keyword = 0
+    sent            = 0
+    skipped_dedup   = 0
+    skipped_age     = 0
+    skipped_filter  = 0
+    skipped_openai  = 0
+
     for art in articles:
         title  = art["title"]
         link   = art["link"]
@@ -579,34 +534,33 @@ def process_articles(articles: list[dict], seen_titles: set) -> int:
 
         norm = normalize(title)
         if norm in seen_titles or is_sent(norm):
+            skipped_dedup += 1
             continue
         seen_titles.add(norm)
 
-        # Age check
         if pub:
             age_hours = (time.time() - mktime(pub)) / 3600
             if age_hours > 24:
                 mark_sent(norm)
+                skipped_age += 1
                 continue
 
-        # ★ Keyword pre-filter (saves OpenAI cost)
         if not passes_keyword_filter(title):
-            filtered_by_keyword += 1
+            skipped_filter += 1
             mark_sent(norm)
             continue
 
-        # OpenAI classification
         analysis = analyze_news(title)
         mark_sent(norm)
 
         if not analysis or not analysis.get("send"):
+            skipped_openai += 1
             continue
 
         msg = format_message(title, link, analysis, source)
-        send(msg)  # queued — non-blocking
+        send(msg)
         sent += 1
 
-        # Update stats
         increment_stat("total_sent")
         increment_stat(analysis.get("main_category", "أخرى"))
         if analysis.get("breaking"):
@@ -616,26 +570,25 @@ def process_articles(articles: list[dict], seen_titles: set) -> int:
         sub = analysis.get("sub_category", "")
         save_latest(title, link, f"{cat} › {sub}" if sub else cat)
 
-    if filtered_by_keyword:
-        log.info(f"🔍 Keyword filter saved {filtered_by_keyword} OpenAI calls this batch")
+    # Debug log — shows exactly why articles weren't sent
+    log.info(
+        f"📊 Article breakdown — "
+        f"sent: {sent} | "
+        f"dedup: {skipped_dedup} | "
+        f"age: {skipped_age} | "
+        f"keyword: {skipped_filter} | "
+        f"openai_rejected: {skipped_openai}"
+    )
 
     return sent
 
 
 # ============================
-# Command Handler (background thread)
+# Command Handler
 # ============================
 def handle_commands():
     log.info("Command listener started")
     offset = None
-
-    TIER_MAP = {
-        "🔴 وكالات أنباء": ["Reuters — Business","Reuters — World","AP News — Business","AP News — World","AFP","UPI","WAM"],
-        "📰 صحافة مالية": ["Bloomberg","Financial Times","Wall Street Journal","CNBC","Forbes","Fortune","MarketWatch","The Economist","Business Insider","Yahoo Finance","Seeking Alpha","Morningstar","Barron's"],
-        "🌐 صحافة دولية": ["BBC — Business","CNN — Business","The Guardian","New York Times","Washington Post","Sky News — Business","Deutsche Welle","Euronews","Channel NewsAsia","NBC News","NPR Business","South China Morning Post","Nikkei Asia"],
-        "🌙 إقليمي وخليجي": ["Al Jazeera","Sky News Arabia","Al Arabiya","Gulf News","Khaleej Times","Arabian Business","The National UAE","Zawya","Arab News","MEED","Asharq Al-Awsat","Al Ittihad","Emarat Al Youm"],
-        "🔍 Google News": ["Google News — UAE EN","Google News — UAE AR"],
-    }
 
     while True:
         updates = get_updates(offset)
@@ -656,77 +609,53 @@ def handle_commands():
                 send(
                     "🤖 <b>UAE Business News Bot</b>\n\n"
                     f"أهلاً! أغطّي <b>{len(sources)} مصدر · {total_f} feed</b>\n\n"
-                    "/help — قائمة الأوامر\n/stats — إحصائيات\n"
-                    "/latest — آخر 5 أخبار\n/categories — حسب التصنيف\n"
-                    "/sources — قائمة المصادر\n/health — صحة المصادر\n"
-                    "/pause — إيقاف\n/resume — استئناف\n/status — الحالة",
+                    "/help · /stats · /latest · /categories\n"
+                    "/sources · /health · /flush\n"
+                    "/pause · /resume · /status",
                     chat_id=cid
                 )
 
             elif cmd == "/help":
                 send(
                     "📖 <b>قائمة الأوامر</b>\n\n"
-                    "/start · /help · /stats · /latest\n"
-                    "/categories · /sources · /health\n"
-                    "/pause · /resume · /status",
+                    "/start — رسالة ترحيب\n"
+                    "/stats — إحصائيات\n"
+                    "/latest — آخر 5 أخبار\n"
+                    "/categories — حسب التصنيف\n"
+                    "/sources — قائمة المصادر\n"
+                    "/health — صحة المصادر\n"
+                    "/flush — مسح cache التكرار (إذا 0 أخبار)\n"
+                    "/pause — إيقاف الإرسال\n"
+                    "/resume — استئناف الإرسال\n"
+                    "/status — حالة البوت",
                     chat_id=cid
                 )
 
-            elif cmd == "/sources":
-                lines = [f"🌍 <b>المصادر — {len(sources)} مصدر · {total_f} feed</b>\n"]
-                for tier, names in TIER_MAP.items():
-                    active = [n for n in names if n in sources]
-                    if active:
-                        lines.append(f"\n<b>{tier}</b>")
-                        for n in active:
-                            lines.append(f"  • {n} ({len(sources[n])} feeds)")
-                send("\n".join(lines), chat_id=cid)
-
-            elif cmd == "/health":
-                health = get_feed_health()
-                if not health:
-                    send("📭 لا توجد بيانات صحة بعد.", chat_id=cid)
-                    continue
-                source_names = set()
-                for k in health:
-                    source_names.add(k.rsplit(":", 1)[0])
-                lines = ["📊 <b>صحة المصادر</b>\n"]
-                ok_sources   = []
-                fail_sources = []
-                for s in sorted(source_names):
-                    ok   = int(health.get(f"{s}:ok", 0))
-                    fail = int(health.get(f"{s}:fail", 0))
-                    total = ok + fail
-                    pct   = int(ok / total * 100) if total else 0
-                    icon  = "✅" if pct >= 70 else ("⚠️" if pct >= 30 else "❌")
-                    entry = f"{icon} {s}: {pct}% ({ok}/{total})"
-                    if pct >= 70:
-                        ok_sources.append(entry)
-                    else:
-                        fail_sources.append(entry)
-                if fail_sources:
-                    lines.append("<b>مشاكل:</b>")
-                    lines.extend(fail_sources)
-                    lines.append("")
-                lines.append("<b>تعمل بشكل جيد:</b>")
-                lines.extend(ok_sources[:15])  # limit to avoid TG message length
-                send("\n".join(lines), chat_id=cid)
+            elif cmd == "/flush":
+                cache_size = r.scard(REDIS_KEY)
+                flush_dedup_cache()
+                send(
+                    f"🗑️ تم مسح الـ cache!\n"
+                    f"حُذف {cache_size} عنوان محفوظ.\n"
+                    f"الدورة القادمة ستُرسل الأخبار الجديدة.",
+                    chat_id=cid
+                )
 
             elif cmd == "/stats":
                 stats  = get_stats()
                 total  = stats.get("total_sent", "0")
                 brk    = stats.get("breaking", "0")
                 cycles = stats.get("cycles", "0")
-                saved  = stats.get("keyword_filter_saved", "0")
+                cache  = r.scard(REDIS_KEY)
                 lines  = [
                     "📊 <b>إحصائيات البوت</b>\n",
                     f"📨 إجمالي الأخبار: <b>{total}</b>",
                     f"🚨 أخبار عاجلة: <b>{brk}</b>",
                     f"🔄 دورات الفحص: <b>{cycles}</b>",
-                    f"💰 أخبار فُلترت (وُفّرت API): <b>{saved}</b>",
+                    f"💾 Cache size: <b>{cache}</b> عنوان",
                     "\n🗂️ <b>حسب التصنيف:</b>"
                 ]
-                skip = {"total_sent", "breaking", "cycles", "keyword_filter_saved"}
+                skip = {"total_sent", "breaking", "cycles"}
                 for k, v in sorted(stats.items(), key=lambda x: -int(x[1])):
                     if k not in skip:
                         lines.append(f"  • {k}: {v}")
@@ -735,7 +664,7 @@ def handle_commands():
             elif cmd == "/latest":
                 items = get_latest(5)
                 if not items:
-                    send("📭 لا توجد أخبار محفوظة بعد.", chat_id=cid)
+                    send("📭 لا توجد أخبار محفوظة بعد.\nجرب /flush إذا البوت لا يرسل.", chat_id=cid)
                 else:
                     out = "📰 <b>آخر 5 أخبار</b>\n\n"
                     for i, item in enumerate(items, 1):
@@ -747,12 +676,42 @@ def handle_commands():
 
             elif cmd == "/categories":
                 stats    = get_stats()
-                skip     = {"total_sent", "breaking", "cycles", "keyword_filter_saved"}
+                skip     = {"total_sent", "breaking", "cycles"}
                 cat_keys = [k for k in stats if k not in skip]
                 lines    = ["🗂️ <b>الأخبار حسب التصنيف</b>\n"]
                 for k in sorted(cat_keys, key=lambda x: int(stats[x]), reverse=True):
                     lines.append(f"• {k}: <b>{stats[k]}</b> خبر")
                 send("\n".join(lines) if cat_keys else "لا توجد بيانات بعد.", chat_id=cid)
+
+            elif cmd == "/sources":
+                lines = [f"🌍 <b>المصادر — {len(sources)} مصدر</b>\n"]
+                for name, urls in sources.items():
+                    lines.append(f"• {name} ({len(urls)} feeds)")
+                send("\n".join(lines), chat_id=cid)
+
+            elif cmd == "/health":
+                health = get_feed_health()
+                if not health:
+                    send("📭 لا توجد بيانات صحة بعد.", chat_id=cid)
+                    continue
+                source_names = set(k.rsplit(":", 1)[0] for k in health)
+                good, bad = [], []
+                for s in sorted(source_names):
+                    ok   = int(health.get(f"{s}:ok", 0))
+                    fail = int(health.get(f"{s}:fail", 0))
+                    total_calls = ok + fail
+                    pct  = int(ok / total_calls * 100) if total_calls else 0
+                    icon = "✅" if pct >= 70 else ("⚠️" if pct >= 30 else "❌")
+                    entry = f"{icon} {s}: {pct}%"
+                    (good if pct >= 70 else bad).append(entry)
+                lines = ["📊 <b>صحة المصادر</b>\n"]
+                if bad:
+                    lines.append("<b>❌ تحتاج إصلاح:</b>")
+                    lines.extend(bad)
+                    lines.append("")
+                lines.append("<b>✅ تعمل بشكل جيد:</b>")
+                lines.extend(good[:20])
+                send("\n".join(lines), chat_id=cid)
 
             elif cmd == "/pause":
                 pause_bot()
@@ -763,11 +722,12 @@ def handle_commands():
                 send("▶️ تم استئناف الإرسال ✅", chat_id=cid)
 
             elif cmd == "/status":
-                stats  = get_stats()
+                stats = get_stats()
                 send(
                     f"🤖 <b>حالة البوت</b>\n\n"
                     f"الحالة: {'⏸️ متوقف' if is_paused() else '✅ يعمل'}\n"
                     f"📨 أخبار مرسلة: {stats.get('total_sent','0')}\n"
+                    f"💾 Cache: {r.scard(REDIS_KEY)} عنوان\n"
                     f"🌍 المصادر: {len(sources)}\n"
                     f"🕐 {datetime.now().strftime('%H:%M · %d/%m/%Y')}",
                     chat_id=cid
@@ -777,30 +737,27 @@ def handle_commands():
 
 
 # ============================
-# Main Loop — Concurrent Feed Fetching
+# Main Loop
 # ============================
 def main():
     sources     = get_all_sources()
     total_feeds = sum(len(v) for v in sources.values())
 
-    log.info(f"Bot started — {len(sources)} sources, {total_feeds} feeds, {MAX_FEED_WORKERS} workers")
+    log.info(f"Bot started — {len(sources)} sources, {total_feeds} feeds")
 
-    # Start rate-limited Telegram sender
-    tg_thread = threading.Thread(target=_telegram_sender, daemon=True)
-    tg_thread.start()
+    # Start Telegram sender thread
+    threading.Thread(target=_telegram_sender, daemon=True).start()
 
-    # Start command listener
-    cmd_thread = threading.Thread(target=handle_commands, daemon=True)
-    cmd_thread.start()
+    # Start command listener thread
+    threading.Thread(target=handle_commands, daemon=True).start()
 
     send(
         "🤖 <b>UAE Business News Bot</b> started ✅\n\n"
         f"🌍 <b>{len(sources)} مصدر · {total_feeds} feed</b>\n"
         f"⚡ معالجة متوازية ({MAX_FEED_WORKERS} workers)\n"
-        f"💰 فلتر ذكي يوفر تكلفة OpenAI\n"
-        f"🛡️ Rate limiting محمي من الـ ban\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "💬 اكتب /help للأوامر"
+        f"🔧 URLs محدّثة ومُصلحة\n"
+        "💬 /flush إذا البوت لا يرسل أخبار\n"
+        "💬 /help للأوامر"
     )
 
     while True:
@@ -815,38 +772,32 @@ def main():
         log.info(f"▶ Cycle start — {total_feeds} feeds across {len(sources)} sources")
         increment_stat("cycles")
 
-        # Build flat list of (url, source_name) tasks
         tasks = [
             (url, source_name)
             for source_name, urls in sources.items()
             for url in urls
         ]
 
-        # Fetch all feeds concurrently
         all_articles: list[dict] = []
         with ThreadPoolExecutor(max_workers=MAX_FEED_WORKERS) as executor:
             futures = {
-                executor.submit(fetch_feed, url, source_name): (url, source_name)
-                for url, source_name in tasks
+                executor.submit(fetch_feed, url, src): (url, src)
+                for url, src in tasks
             }
             for future in as_completed(futures):
                 try:
-                    articles = future.result(timeout=FEED_TIMEOUT + 5)
-                    all_articles.extend(articles)
+                    all_articles.extend(future.result(timeout=FEED_TIMEOUT + 5))
                 except Exception as e:
-                    url, src = futures[future]
+                    _, src = futures[future]
                     log.error(f"Future error [{src}]: {e}")
 
         log.info(f"Fetched {len(all_articles)} raw articles from {len(tasks)} feeds")
 
-        # Deduplicate across all sources, then process
         seen_titles: set = set()
         sent_count = process_articles(all_articles, seen_titles)
 
         elapsed = time.time() - cycle_start
         log.info(f"✅ Cycle done in {elapsed:.1f}s — {sent_count} news sent")
-        increment_stat("keyword_filter_saved",
-                       len([a for a in all_articles if not passes_keyword_filter(a["title"])]))
 
         time.sleep(CHECK_INTERVAL)
 
